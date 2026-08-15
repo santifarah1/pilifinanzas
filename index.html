@@ -757,9 +757,18 @@ tr:hover td{background:var(--tarjeta-2)}
   </label>
   <div id="ocr-estado" class="mini-nota" style="display:none;margin-bottom:12px"></div>
 
+  <div id="nota-mov-usd" class="ayuda" style="display:none;margin:-6px 0 14px;color:var(--marino)"></div>
   <div class="fila-2">
     <div class="campo"><label>Fecha</label><input type="date" id="m-fecha"></div>
-    <div class="campo"><label>Monto</label><input id="m-monto" inputmode="decimal" placeholder="15.000"></div>
+    <div class="campo"><label>Monto</label>
+      <div style="display:flex;gap:8px">
+        <input id="m-monto" inputmode="decimal" placeholder="15.000" style="flex:1;min-width:0">
+        <select id="m-moneda" onchange="notaMonedaMov()" style="width:96px;flex:0 0 auto">
+          <option value="ARS">Pesos</option>
+          <option value="USD">USD</option>
+        </select>
+      </div>
+    </div>
   </div>
 
   <div class="campo"><label>Rubro</label><input id="m-cat" list="cats" placeholder="Comida, transporte, sueldo…"><datalist id="cats"></datalist></div>
@@ -1013,6 +1022,8 @@ function difMeses(desde,hasta){
 function parseMonto(v){
   if(v==null)return 0;
   if(typeof v==='number')return isFinite(v)?v:0;
+  // si el texto trae letras (ej "1e3", "mil", "usd") es ambiguo: no lo adivinamos
+  if(/[a-zA-Z]/.test(''+v))return 0;
   let s=(''+v).replace(/[^\d,.\-]/g,'').trim();
   if(!s)return 0;
   const neg=s.startsWith('-'); s=s.replace(/-/g,'');
@@ -1071,7 +1082,23 @@ function conv(monto,fecha){
   }
   return monto;
 }
-function mv(x){return conv(x.monto,x.fecha)}
+// pesos de un movimiento en su fecha, sin importar en qué moneda se cargó
+function montoARS(x){
+  if(x.mon==='USD'){
+    const tc=(dolarMes&&buscarMes(dolarMes,(x.fecha||hoyISO()).slice(0,7)))||dolarUltimo||dolarHoy;
+    return tc?x.monto*tc:x.monto;   // sin cotización, se muestra el número crudo
+  }
+  return x.monto;
+}
+// valor listo para mostrar, ya pasado a la moneda que se está viendo
+function mv(x){
+  if(moneda==='usd'){
+    if(x.mon==='USD')return x.monto;                 // ya está en dólares
+    const tc=(dolarMes&&buscarMes(dolarMes,(x.fecha||hoyISO()).slice(0,7)))||dolarUltimo;
+    return tc?x.monto/tc:x.monto;
+  }
+  return conv(montoARS(x),x.fecha);                  // corrientes o ajustado por IPC
+}
 
 async function cargarIndices(){
   try{
@@ -1295,6 +1322,7 @@ function abrirModal(id){
     ['esencial','gusto','ahorro'].forEach(k=>{document.getElementById('nec-'+k).className='chip'+(necActual===k?' on '+k:'')});
     document.getElementById('m-fecha').value=d.fecha;
     document.getElementById('m-monto').value=paraInput(d.monto);
+    document.getElementById('m-moneda').value=d.mon||'ARS';
     document.getElementById('m-cat').value=d.cat||'';
     document.getElementById('m-cta').value=d.cta||'';
     document.getElementById('m-origen').value=d.cta||'';
@@ -1312,14 +1340,26 @@ function abrirModal(id){
     necActual=''; ['esencial','gusto','ahorro'].forEach(k=>document.getElementById('nec-'+k).className='chip');
     document.getElementById('m-fecha').value=hoyISO();
     ['m-monto','m-cat','m-cta','m-origen','m-destino','m-quien','m-det','m-venc'].forEach(i=>document.getElementById(i).value='');
+    document.getElementById('m-moneda').value='ARS';
     document.getElementById('m-cuotas').value=1;
     document.getElementById('m-pend').checked=false;
     document.getElementById('m-fijo').checked=false;
     togglePend();
   }
+  notaMonedaMov();
   document.getElementById('modal-bg').classList.add('abierto');
 }
 function cerrarModal(){document.getElementById('modal-bg').classList.remove('abierto')}
+function notaMonedaMov(){
+  const el=document.getElementById('nota-mov-usd'); if(!el)return;
+  const usd=document.getElementById('m-moneda').value==='USD';
+  el.style.display=usd?'block':'none';
+  if(usd){
+    const tc=tcHoy();
+    const m=parseMonto(document.getElementById('m-monto').value);
+    el.innerHTML='Se guarda en dólares.'+(tc?(m?(' Hoy son <b>$'+Math.round(m*tc).toLocaleString('es-AR')+'</b> aprox.'):(' Cotización de hoy: $'+Math.round(tc).toLocaleString('es-AR')+'.')):' (todavía no cargó la cotización del dólar)');
+  }
+}
 
 function guardar(){
   const fecha=document.getElementById('m-fecha').value;
@@ -1334,6 +1374,7 @@ function guardar(){
     if(!o||!de){alert('En un pase entre cuentas hace falta decir de dónde sale y a dónde entra.');return}
     if(normCta(o)===normCta(de)){alert('La cuenta de origen y la de destino no pueden ser la misma.');return}
     const obj={id:editandoId||uid(),tipo:'transfer',fecha,monto:Math.abs(montoRaw),
+      mon:document.getElementById('m-moneda').value,
       cta:o,ctaDest:de,cat:document.getElementById('m-cat').value.trim()||'Pase entre cuentas',
       det:document.getElementById('m-det').value.trim(),interno:true};
     if(editandoId)datos=datos.map(d=>d.id===editandoId?obj:d); else datos.push(obj);
@@ -1346,6 +1387,7 @@ function guardar(){
   const nCuotas=Math.max(1,Math.min(60,parseInt(document.getElementById('m-cuotas').value)||1));
   const base={
     tipo:tipoActual,
+    mon:document.getElementById('m-moneda').value,
     cat:document.getElementById('m-cat').value.trim()||'Sin rubro',
     cta:pend?'':document.getElementById('m-cta').value.trim(),
     quien:document.getElementById('m-quien').value.trim(),
@@ -1560,9 +1602,10 @@ function saldosPorCuenta(conFuturos){
     if(d.pend)return;
     // la cuenta igual queda listada (en cero) para que no desaparezca de la vista
     if(!conFuturos&&d.fecha>hoy){poner(d.cta,0);poner(d.ctaDest,0);return}
-    if(d.tipo==='transfer'){poner(d.cta,-d.monto);poner(d.ctaDest,d.monto)}
-    else if(d.tipo==='ingreso')poner(d.cta,d.monto);
-    else poner(d.cta,-d.monto);
+    const v=montoARS(d);
+    if(d.tipo==='transfer'){poner(d.cta,-v);poner(d.ctaDest,v)}
+    else if(d.tipo==='ingreso')poner(d.cta,v);
+    else poner(d.cta,-v);
   });
   return Object.values(s).sort((a,b)=>b.v-a.v);
 }
@@ -1573,7 +1616,7 @@ function gastoDiarioProm(dias){
   const dISO=desde.toISOString().slice(0,10);
   const hoy=hoyISO();
   const g=datos.filter(d=>d.tipo==='gasto'&&!d.interno&&!d.pend&&d.fecha>=dISO&&d.fecha<=hoy&&necDe(d)!=='ahorro')
-               .reduce((a,d)=>a+d.monto,0);
+               .reduce((a,d)=>a+montoARS(d),0);
   return g/dias;
 }
 function mesesRango(lista,n){
@@ -1711,7 +1754,7 @@ function ultimosMov(){
         <b>${esc(d.cat||'Sin rubro')}${d.cuotasT?` <span class="pill cuo">${d.cuotaN}/${d.cuotasT}</span>`:''}</b>
         <small>${d.fecha.slice(8,10)}/${d.fecha.slice(5,7)}${d.quien?' · '+esc(d.quien):''}${d.cta?' · '+esc(d.cta):''}</small>
       </div>
-      <div class="um-monto monto-${cl[d.tipo]}">${d.tipo==='gasto'?'−':(d.tipo==='ingreso'?'+':'')}${fmt(mv(d))}</div>
+      <div class="um-monto monto-${cl[d.tipo]}">${d.tipo==='gasto'?'−':(d.tipo==='ingreso'?'+':'')}${fmt(mv(d))}${d.mon==='USD'&&moneda!=='usd'?' <span class="act-tag">USD</span>':''}</div>
     </div>`).join('');
 }
 
@@ -1861,7 +1904,7 @@ function renderTabla(){
       <td>${esc(d.cat||'—')}${d.cuotasT?` <span class="pill cuo">${d.cuotaN}/${d.cuotasT}</span>`:''}${d.fijo?' <span class="act-tag">fijo</span>':''}</td>
       <td style="max-width:280px">${esc(d.det||'')}${d.quien?`<div style="font-size:12px;color:var(--tinta-3)">${esc(d.quien)}</div>`:''}</td>
       <td style="white-space:nowrap">${d.tipo==='transfer'?esc(d.cta||'?')+' → '+esc(d.ctaDest||'?'):esc(d.cta||'—')}</td>
-      <td style="text-align:right;white-space:nowrap" class="monto-${cl[d.tipo]}">${d.tipo==='gasto'?'−':(d.tipo==='ingreso'?'+':'')}${fmt(mv(d))}</td>
+      <td style="text-align:right;white-space:nowrap" class="monto-${cl[d.tipo]}">${d.tipo==='gasto'?'−':(d.tipo==='ingreso'?'+':'')}${fmt(mv(d))}${d.mon==='USD'&&moneda!=='usd'?' <span class="act-tag">USD</span>':''}</td>
       <td style="text-align:right;white-space:nowrap">
         <button class="borrar" onclick="abrirModal('${d.id}')" title="Editar">✎</button>
         <button class="borrar" onclick="borrar('${d.id}')" title="Borrar">✕</button>
@@ -1881,12 +1924,12 @@ function presuPanel(){
   document.getElementById('presu-mes').textContent=nombreMes(ym);
   const lista=delMes(ym,datos).filter(d=>d.tipo==='gasto');
   const gastadoPorRubro={};
-  lista.forEach(d=>{gastadoPorRubro[d.cat||'Sin rubro']=(gastadoPorRubro[d.cat||'Sin rubro']||0)+d.monto});
+  lista.forEach(d=>{gastadoPorRubro[d.cat||'Sin rubro']=(gastadoPorRubro[d.cat||'Sin rubro']||0)+montoARS(d)});
   const conTope=Object.entries(presu).filter(([k,v])=>v>0);
   const topeTotal=conTope.reduce((a,[,v])=>a+v,0);
   const gastadoConTope=conTope.reduce((a,[k])=>a+(gastadoPorRubro[k]||0),0);
-  const gastadoTotal=lista.reduce((a,d)=>a+d.monto,0);
-  const ingMes=delMes(ym,datos).filter(d=>d.tipo==='ingreso').reduce((a,d)=>a+d.monto,0);
+  const gastadoTotal=lista.reduce((a,d)=>a+montoARS(d),0);
+  const ingMes=delMes(ym,datos).filter(d=>d.tipo==='ingreso').reduce((a,d)=>a+montoARS(d),0);
   const hoy=new Date(), esMesActual=ym===mesActual();
   const diaHoy=esMesActual?hoy.getDate():diasEnMes(+ym.slice(0,4),+ym.slice(5,7));
   const diasMes=diasEnMes(+ym.slice(0,4),+ym.slice(5,7));
@@ -1949,7 +1992,7 @@ function cuentasPanel(){
       </div>`).join('')+
       `<div class="g-fila" style="border-top:2px solid var(--borde);margin-top:6px"><div class="g-act">Total líquido</div><div class="g-nums"><b>${fmtS(conv(total,hoyISO()))}</b></div></div>`;
   }
-  const fut=cuotasFuturas().reduce((a,d)=>a+d.monto,0);
+  const fut=cuotasFuturas().reduce((a,d)=>a+montoARS(d),0);
   document.getElementById('ctas-nota').innerHTML='Esto es la plata de hoy. No se cuentan los pendientes (lo que te deben o debés) hasta que los marques como cobrados o pagados'+
     (fut>0?(', ni las cuotas que todavía no vencieron: son <b>'+fmt(conv(fut,hoyISO()))+'</b> y las ves en Tarjeta y cuotas.'):'.');
 
@@ -1998,11 +2041,11 @@ function cuotasFuturas(){
 }
 function cuotasPanel(){
   const ps=planes(), fut=cuotasFuturas();
-  const debe=fut.reduce((a,d)=>a+d.monto,0);
+  const debe=fut.reduce((a,d)=>a+montoARS(d),0);
   const activos=ps.filter(p=>p.resta>0);
   const proxMes=sumarMeses(hoyISO(),1).slice(0,7), esteMes=mesActual();
-  const cuotaEste=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===esteMes).reduce((a,d)=>a+d.monto,0);
-  const cuotaProx=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===proxMes).reduce((a,d)=>a+d.monto,0);
+  const cuotaEste=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===esteMes).reduce((a,d)=>a+montoARS(d),0);
+  const cuotaProx=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===proxMes).reduce((a,d)=>a+montoARS(d),0);
 
   document.getElementById('cuotas-resumen').innerHTML='<div class="cierre-grid">'+[
     ['Falta pagar',fmtS(conv(debe,hoyISO())),fut.length+' cuotas por delante',debe>0?'var(--violeta)':'var(--verde)'],
@@ -2112,9 +2155,9 @@ function renderPatrimonio(){
   const liq=totalLiquido();
   const guardadoARS=activos.reduce((a,x)=>a+(x.mon==='USD'?(tc?x.monto*tc:0):x.monto),0);
   const p=pendientes();
-  const porCobrar=p.filter(d=>d.tipo==='ingreso').reduce((a,d)=>a+d.monto,0);
-  const porPagar=p.filter(d=>d.tipo==='gasto').reduce((a,d)=>a+d.monto,0);
-  const cuotas=cuotasFuturas().reduce((a,d)=>a+d.monto,0);
+  const porCobrar=p.filter(d=>d.tipo==='ingreso').reduce((a,d)=>a+montoARS(d),0);
+  const porPagar=p.filter(d=>d.tipo==='gasto').reduce((a,d)=>a+montoARS(d),0);
+  const cuotas=cuotasFuturas().reduce((a,d)=>a+montoARS(d),0);
   const neto=liq+guardadoARS+porCobrar-porPagar-cuotas;
   const enUSD=v=>tc?('US$'+Math.round(v/tc).toLocaleString('es-AR')):'—';
 
@@ -2184,7 +2227,7 @@ function metasPanel(){
   const ahorroMes=(()=>{
     const ms=[...new Set(datos.filter(d=>d.tipo==='gasto'&&necDe(d)==='ahorro').map(d=>d.fecha.slice(0,7)))];
     if(!ms.length)return 0;
-    const tot=datos.filter(d=>d.tipo==='gasto'&&necDe(d)==='ahorro').reduce((a,d)=>a+d.monto,0);
+    const tot=datos.filter(d=>d.tipo==='gasto'&&necDe(d)==='ahorro').reduce((a,d)=>a+montoARS(d),0);
     return tot/ms.length;
   })();
   cont.innerHTML=metas.map(m=>{
@@ -2271,9 +2314,9 @@ function fijosPanel(){
   const ings=(()=>{
     const ms=[...new Set(datos.filter(d=>d.tipo==='ingreso'&&!d.pend).map(d=>d.fecha.slice(0,7)))];
     if(!ms.length)return 0;
-    return datos.filter(d=>d.tipo==='ingreso'&&!d.pend).reduce((a,d)=>a+d.monto,0)/ms.length;
+    return datos.filter(d=>d.tipo==='ingreso'&&!d.pend).reduce((a,d)=>a+montoARS(d),0)/ms.length;
   })();
-  const cuotasMes=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===ym).reduce((a,d)=>a+d.monto,0);
+  const cuotasMes=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===ym).reduce((a,d)=>a+montoARS(d),0);
   const piso=total+cuotasMes;
   document.getElementById('fijos-resumen').innerHTML='<div class="cierre-grid">'+[
     ['Gastos fijos',fmt(conv(total,hoyISO())),fijos.length+' concepto'+(fijos.length===1?'':'s'),'var(--tinta)'],
@@ -2307,15 +2350,15 @@ function fijosPanel(){
 function calcularAlertas(){
   const as=[], ym=mesFoco(), hoy=hoyISO();
   const lista=delMes(ym,datos);
-  const ing=lista.filter(d=>d.tipo==='ingreso').reduce((a,d)=>a+d.monto,0);
-  const gas=lista.filter(d=>d.tipo==='gasto').reduce((a,d)=>a+d.monto,0);
+  const ing=lista.filter(d=>d.tipo==='ingreso').reduce((a,d)=>a+montoARS(d),0);
+  const gas=lista.filter(d=>d.tipo==='gasto').reduce((a,d)=>a+montoARS(d),0);
 
   if(ing&&gas>ing)as.push({nivel:'roja',ico:'▲',txt:`En ${nombreMes(ym)} gastaste <b>${fmt(conv(gas-ing,ym+'-15'))} más</b> de lo que entró.`,preg:'¿En qué me pasé este mes?'});
   else if(ing&&gas/ing>.9)as.push({nivel:'amar',ico:'●',txt:`Vas gastando el <b>${(gas/ing*100).toFixed(0)}%</b> de lo que entró en ${nombreMes(ym)}. Queda poco margen.`,preg:'¿Dónde puedo recortar este mes?'});
 
   Object.entries(presu).forEach(([cat,tope])=>{
     if(!tope)return;
-    const g=lista.filter(d=>d.tipo==='gasto'&&norm(d.cat)===norm(cat)).reduce((a,d)=>a+d.monto,0);
+    const g=lista.filter(d=>d.tipo==='gasto'&&norm(d.cat)===norm(cat)).reduce((a,d)=>a+montoARS(d),0);
     if(g>tope)as.push({nivel:'roja',ico:'◆',txt:`<b>${esc(cat)}</b>: te pasaste ${fmt(conv(g-tope,ym+'-15'))} del tope de ${fmt(conv(tope,ym+'-15'))}.`,preg:'¿Por qué se me disparó '+cat+'?'});
     else if(g>tope*.85)as.push({nivel:'amar',ico:'◆',txt:`<b>${esc(cat)}</b>: llevás ${fmt(conv(g,ym+'-15'))} de ${fmt(conv(tope,ym+'-15'))}. Estás al filo.`});
   });
@@ -2329,7 +2372,7 @@ function calcularAlertas(){
   const venc=pendientes().filter(d=>d.venc&&d.venc<hoy);
   if(venc.length)as.push({nivel:'amar',ico:'◍',txt:`Tenés <b>${venc.length}</b> movimiento${venc.length===1?'':'s'} pendiente${venc.length===1?'':'s'} con la fecha ya vencida.`,preg:'¿Qué deudas tengo vencidas?'});
 
-  const cuotaProx=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===sumarMeses(hoy,1).slice(0,7)).reduce((a,d)=>a+d.monto,0);
+  const cuotaProx=datos.filter(d=>d.grupo&&d.fecha.slice(0,7)===sumarMeses(hoy,1).slice(0,7)).reduce((a,d)=>a+montoARS(d),0);
   if(cuotaProx>0&&ing&&cuotaProx>ing*.25)as.push({nivel:'amar',ico:'▭',txt:`El mes que viene te vienen <b>${fmt(conv(cuotaProx,hoy))}</b> en cuotas: más del 25% de un ingreso típico.`,preg:'¿Cómo me afectan las cuotas los próximos meses?'});
 
   const fijosTotal=fijos.reduce((a,f)=>a+f.monto,0);
@@ -2338,10 +2381,10 @@ function calcularAlertas(){
   const gd=gastoDiarioProm(90), liq=totalLiquido();
   if(gd>0&&liq>0&&liq/gd<30)as.push({nivel:'roja',ico:'◔',txt:`Con lo que tenés líquido bancás <b>${Math.floor(liq/gd)} días</b> al ritmo de gasto actual.`,preg:'¿Cómo estiro la plata que me queda?'});
 
-  const ahorro=lista.filter(d=>d.tipo==='gasto'&&necDe(d)==='ahorro').reduce((a,d)=>a+d.monto,0);
+  const ahorro=lista.filter(d=>d.tipo==='gasto'&&necDe(d)==='ahorro').reduce((a,d)=>a+montoARS(d),0);
   if(ing&&ahorro/ing>=.1)as.push({nivel:'verde',ico:'✓',txt:`Este mes guardaste el <b>${(ahorro/ing*100).toFixed(0)}%</b> de lo que entró. Bien ahí.`});
 
-  const sinRubro=lista.filter(d=>d.tipo==='gasto'&&!necDe(d)).reduce((a,d)=>a+d.monto,0);
+  const sinRubro=lista.filter(d=>d.tipo==='gasto'&&!necDe(d)).reduce((a,d)=>a+montoARS(d),0);
   if(gas&&sinRubro/gas>.35)as.push({nivel:'azul',ico:'◫',txt:`El <b>${(sinRubro/gas*100).toFixed(0)}%</b> de tus gastos del mes no está clasificado como esencial, gusto ni ahorro. Clasificalos en Rubros y el reparto se vuelve mucho más útil.`});
 
   return as;
@@ -2498,7 +2541,7 @@ function armarImport(){
     out.push({id:uid(),tipo,fecha,monto:Math.abs(monto),
       cat:(cC?(''+r[cC]).trim():'')||'Sin rubro',
       det:cD?(''+r[cD]).trim():'',
-      cta,quien:'',nec:'',pend:false,interno:false});
+      cta,quien:'',nec:'',mon:'ARS',pend:false,interno:false});
   });
   return out;
 }
@@ -2533,10 +2576,10 @@ function confirmarImport(){
 // ============ EXPORTAR ============
 function exportar(){
   if(!datos.length){alert('No hay nada para exportar.');return}
-  const cab=['fecha','tipo','rubro','clasificacion','detalle','quien','cuenta','cuenta_destino','monto','cuota','total_cuotas','pendiente','vencimiento','fijo'];
+  const cab=['fecha','tipo','rubro','clasificacion','detalle','quien','cuenta','cuenta_destino','monto','moneda','cuota','total_cuotas','pendiente','vencimiento','fijo'];
   const filas=[...datos].sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(d=>[
     d.fecha,d.tipo,d.cat||'',necDe(d),d.det||'',d.quien||'',d.cta||'',d.ctaDest||'',
-    d.monto,d.cuotaN||'',d.cuotasT||'',d.pend?'si':'no',d.venc||'',d.fijo?'si':'no'
+    paraInput(d.monto),d.mon||'ARS',d.cuotaN||'',d.cuotasT||'',d.pend?'si':'no',d.venc||'',d.fijo?'si':'no'
   ]);
   const csv=[cab,...filas].map(f=>f.map(v=>{
     const s=''+(v==null?'':v);
@@ -2820,8 +2863,9 @@ function resumenParaIA(){
   L.push('=== GASTOS POR RUBRO (últimos 12 meses) ===');
   const agg={};
   datos.filter(d=>d.tipo==='gasto'&&!d.pend&&!d.interno&&ms.includes(d.fecha.slice(0,7)))
-    .forEach(d=>{const k=(d.cat||'Sin rubro')+' ['+(necDe(d)||'sin clasificar')+']';agg[k]=(agg[k]||0)+d.monto});
+    .forEach(d=>{const k=(d.cat||'Sin rubro')+' ['+(necDe(d)||'sin clasificar')+']';agg[k]=(agg[k]||0)+montoARS(d)});
   Object.entries(agg).sort((a,b)=>b[1]-a[1]).slice(0,25).forEach(([k,v])=>L.push(k+': $'+Math.round(v)));
+  if(datos.some(d=>d.mon==='USD'))L.push('(Algunos movimientos se cargaron en dólares; acá ya están convertidos a pesos al tipo de cambio de su fecha.)');
   L.push('');
   L.push('=== SALDOS POR CUENTA ===');
   saldosPorCuenta().forEach(c=>L.push(c.n+': $'+Math.round(c.v)));
@@ -2832,7 +2876,7 @@ function resumenParaIA(){
   if(Object.keys(presu).length){
     L.push('=== PRESUPUESTOS DEL MES ('+ym+') ===');
     Object.entries(presu).forEach(([c,t])=>{
-      const g=delMes(ym,datos).filter(d=>d.tipo==='gasto'&&norm(d.cat)===norm(c)).reduce((a,d)=>a+d.monto,0);
+      const g=delMes(ym,datos).filter(d=>d.tipo==='gasto'&&norm(d.cat)===norm(c)).reduce((a,d)=>a+montoARS(d),0);
       L.push(c+': tope $'+Math.round(t)+' | gastado $'+Math.round(g));
     });
     L.push('');
@@ -2847,7 +2891,7 @@ function resumenParaIA(){
   if(ps.length){
     L.push('=== COMPRAS EN CUOTAS PENDIENTES ===');
     ps.forEach(p=>L.push(p.cat+(p.quien?' ('+p.quien+')':'')+': cuota $'+Math.round(p.cuota)+', pagadas '+p.pagadas+'/'+p.n+', falta $'+Math.round(p.resta)+', termina '+p.fin));
-    L.push('TOTAL COMPROMETIDO EN CUOTAS: $'+Math.round(cuotasFuturas().reduce((a,d)=>a+d.monto,0)));
+    L.push('TOTAL COMPROMETIDO EN CUOTAS: $'+Math.round(cuotasFuturas().reduce((a,d)=>a+montoARS(d),0)));
     L.push('');
   }
   const p=pendientes();
@@ -2935,7 +2979,7 @@ function leerTicket(e){
   reader.onload=async ev=>{
     const b64=ev.target.result.split(',')[1];
     const prompt=`Sos un lector de tickets y comprobantes argentinos. Mirá la imagen y devolvé SOLO un JSON, sin texto alrededor y sin backticks:
-{"fecha":"YYYY-MM-DD o null","comercio":"nombre del comercio o null","total":número o null,"rubro":"categoría corta del gasto en castellano (ej: supermercado, nafta, farmacia, bar, ropa, transporte) o null","cuotas":número de cuotas si el ticket lo aclara, si no 1,"es_ingreso":true solo si es un comprobante de cobro a favor de la persona, si no false}
+{"fecha":"YYYY-MM-DD o null","comercio":"nombre del comercio o null","total":número o null,"rubro":"categoría corta del gasto en castellano (ej: supermercado, nafta, farmacia, bar, ropa, transporte) o null","cuotas":número de cuotas si el ticket lo aclara, si no 1,"moneda":"USD" solo si el ticket está claramente en dólares, si no "ARS","es_ingreso":true solo si es un comprobante de cobro a favor de la persona, si no false}
 Los montos van como número sin separador de miles ni símbolo (ej 12345.67). Si un dato no está claro, poné null. NO inventes.`;
     try{
       const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${key}`,{
@@ -2955,6 +2999,7 @@ Los montos van como número sin separador de miles ni símbolo (ej 12345.67). Si
       setTipo(d.es_ingreso?'ingreso':'gasto');
       if(d.fecha&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha))document.getElementById('m-fecha').value=d.fecha;
       if(d.total)document.getElementById('m-monto').value=Math.round(d.total*100)/100;
+      if(d.moneda==='USD'||d.moneda==='usd'){document.getElementById('m-moneda').value='USD';notaMonedaMov();}
       if(d.comercio)document.getElementById('m-quien').value=d.comercio;
       if(d.rubro)document.getElementById('m-cat').value=d.rubro;
       if(d.cuotas&&d.cuotas>1)document.getElementById('m-cuotas').value=d.cuotas;
@@ -2970,6 +3015,7 @@ function init(){
   if(localStorage.getItem('bitacora_tema')==='oscuro')document.body.classList.add('oscuro');
   ponerNombre();ponerFrase();ponerFecha();
   document.getElementById('f-moneda').value=moneda;
+  document.getElementById('m-monto').addEventListener('input',notaMonedaMov);
   document.getElementById('m-cuotas').addEventListener('input',function(){
     const n=parseInt(this.value)||1;
     const m=parseMonto(document.getElementById('m-monto').value);
